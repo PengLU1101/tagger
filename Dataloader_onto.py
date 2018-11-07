@@ -61,9 +61,9 @@ class Dataset(data.Dataset):
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
-        #name2out = {"conll2003": "NER_BIO", "conll2000": "chunk_BIO", "unidep": "POS"}
+        name2out = {"ontonotes": "NER_BIO", "conll2000": "chunk_BIO", "wsjpos": "POS"}
         #name2out = {"conll2003": "NER_IOBES", "conll2000": "chunk_IOBES", "unidep": "POS"}
-        name2out = {"conll2003": "NER_BIO", "conll2000": "chunk_BIO", "wsjpos": "POS"}
+        #name2out = {"conll2003": "NER_BIO", "conll2000": "chunk_BIO", "wsjpos": "POS"}
         #name2out = {"conll2003": "NER_IOBES", "conll2000": "chunk_IOBES", "wsjpos": "POS"}
 
         src_seq = self.data_list[index]["tokens"]

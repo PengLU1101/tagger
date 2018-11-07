@@ -19,7 +19,7 @@ USE_CUDA = torch.cuda.is_available()
 
 
 class Share_lstm_cell(nn.Module):
-    def __init__(self, d_in, d_hid, bias=True, layernorm=False, share=3):
+    def __init__(self, d_in, d_hid, bias=True, layernorm=False, share=2):
         super(Share_lstm_cell, self).__init__()
         self.d_in = d_in
         self.d_hid = d_hid
@@ -28,19 +28,21 @@ class Share_lstm_cell(nn.Module):
         self.num_gate = 4 + share
         self.weight_ih = nn.Parameter(torch.Tensor(self.num_gate * d_hid, d_in))
         self.weight_hh = nn.Parameter(torch.Tensor(4 * d_hid, d_hid))
-        #self.weight_sh = nn.Parameter(torch.Tensor(share * d_hid, d_hid)) #####
-        self.weight_sh_list = nn.ParameterList([nn.Parameter(torch.Tensor(d_hid, d_hid)) for i in range(share)])
+        self.weight_sh = nn.Parameter(torch.Tensor(share * d_hid, d_hid))
         if bias:
             self.bias_ih = nn.Parameter(torch.Tensor(self.num_gate * d_hid))
             self.bias_hh = nn.Parameter(torch.Tensor(4 * d_hid))
-            self.bias_sh_list = nn.ParameterList([nn.Parameter(torch.Tensor(d_hid)) for i in range(share)])
+            self.bias_sh = nn.Parameter(torch.Tensor(share * d_hid))
         else:
             self.register_parameter('bias_ih', None)
             self.register_parameter('bias_hh', None)
             self.register_parameter('bias_sh', None)
         self.reset_parameters()
         self.share_num = float(share)
-        
+        #self.norm = layernorm
+        #if layernorm:
+            #self.norm_i = LayerNorm(d_in)
+            #self.norm_h = LayerNorm(d_hid)
     '''
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.d_hid)
@@ -86,19 +88,22 @@ class Share_lstm_cell(nn.Module):
         tmp2 = torch.addmm(self.bias_hh,
                            h_minors,
                            self.weight_hh.transpose(1, 0))
-        tmp3_list = [torch.addmm(self.bias_sh_list[i],
-                                 s_minors[i],
-                                 self.weight_sh_list[i].transpose(1, 0)) for i in range(len(s_minors))]
-        tmp3 = torch.cat(tmp3_list, dim=1)
+
+        tmp3 = torch.addmm(self.bias_sh,
+                           s_minors[idx],
+                           self.weight_sh.transpose(1, 0))
+
         tmp_in, tmp_s = torch.split(tmp, 4 * self.d_hid, dim=1)
-        ifo, c_hat = torch.split(tmp_in+tmp2, 3 * self.d_hid, dim=1)
+        ifob, c_hat = torch.split(tmp_in+tmp2, 3 * self.d_hid, dim=1)
         b = torch.split(torch.sigmoid(tmp_s+tmp3), self.d_hid, dim=1)
 
-        i, f, o = torch.split(torch.sigmoid(ifo), self.d_hid, dim=1)
+        i, f, o = torch.split(torch.sigmoid(ifob), self.d_hid, dim=1)
         
-        c_t = (f * c_minors + i * torch.tanh(c_hat)) * mask
+        c_t = f * c_minors + i * torch.tanh(c_hat)
+        c_t = c_t * mask
         h = o * torch.tanh(c_t) * mask
         s = [bb * torch.tanh(c_t) * mask for bb in b]
+
         return h, c_t, s
 
 class StackedLSTMCell(nn.Module):
@@ -113,6 +118,7 @@ class StackedLSTMCell(nn.Module):
         self.layers = nn.ModuleList([Share_lstm_cell(d_in, d_hid, share=share)])
         if n_layers > 1:
             self.layers.append(Share_lstm_cell(d_hid, d_hid, share=share))
+            #self.layers.append(Share_lstm_cell(d_in, d_hid, share=share))
 
     def forward(self, input, h_0, c_0, s_0, mask, idx):
         h_1, c_1, s_1 = [], [], []
@@ -120,7 +126,12 @@ class StackedLSTMCell(nn.Module):
         for i, layer in enumerate(self.layers):
             s_0_i = [x[i] for x in s_0]
             h_1_i, c_1_i, s_1_i = layer(input, h_0[i], c_0[i], s_0_i, mask, idx)
-            
+            """
+            if i > 0:
+                input = h_1_i + input
+            else:
+                input = h_1_i
+            """    
             input = h_1_i
             h_1 += [h_1_i]
             c_1 += [c_1_i]
@@ -129,7 +140,6 @@ class StackedLSTMCell(nn.Module):
         h_1 = torch.stack(h_1)
         c_1 = torch.stack(c_1)
         s_list = [torch.stack(s_1[i::self.share]) for i in range(self.share)]
-        
         return input, h_1, c_1, s_list
     def init_hid(self, batch_size):
         h, c = (Variable(torch.zeros(self.n_layers, batch_size, self.d_hid)) for i in range(2))
@@ -165,25 +175,28 @@ class BiSLSTM(nn.Module):
         h_r_list, c_r_list, s_r_lists = [], [], []
         h, c = self.RNN.init_hid(batch_size)
         h_r, c_r = self.RNN_r.init_hid(batch_size)
-        s_list = self.RNN.init_s(batch_size)
-        s_r_list = self.RNN_r.init_s(batch_size)
-
+        s = self.RNN.init_s(batch_size)
+        s_r = self.RNN_r.init_s(batch_size)
         for i in range(seq_len):
-            _, h, c, s_list = self.RNN(inputs[i], h, c, s_list, mask[i], idx)
+            _, h, c, s_list = self.RNN(inputs[i], h, c, s, mask[i], idx)
             h_list += [h[-1]]
             c_list += [c[-1]]
-            s_lists += [s[-1] for s in s_list]
-            _, h_r, c_r, s_r_list = self.RNN_r(inputs[seq_len-i-1], h_r, c_r, s_r_list, mask[seq_len-i-1], idx)
+            s_lists += [[s[-1] for s in s_list]]
+            #s_lists += [s_list]
+            _, h_r, c_r, s_r_list = self.RNN_r(inputs[seq_len-i-1], h_r, c_r, s_r, mask[seq_len-i-1], idx)
             h_r_list += [h_r[-1]]
             c_r_list += [c_r[-1]]
-            s_r_lists += [s_r[-1] for s_r in s_r_list[::-1]]
+            s_r_lists += [[s_r[-1] for s_r in s_r_list]]
+            #s_r_lists += [s_r_list]
 
         h_f = torch.cat((torch.stack(h_list, dim=0), torch.stack(h_r_list[::-1], dim=0)), dim=2)
         c_f = torch.cat((torch.stack(c_list, dim=0), torch.stack(c_r_list[::-1], dim=0)), dim=2)
         s_f_list = []
-        # [1, 2, 3, 1, 2, 3][1, 2, 3, 1, 2, 3] 
+        zip_fr = zip(s_lists, s_r_lists[::-1])
 
-        s_f_list = [torch.cat((itm[0], itm[1]), dim=-1) for itm in zip(s_lists, s_r_lists[::-1])]
+        for itm in zip_fr:
+            for idx in range(self.RNN.share):
+                s_f_list += [torch.cat((itm[0][idx], itm[1][idx]), dim=-1)]
         final_list = [torch.stack(s_f_list[i::self.RNN.share]) for i in range(self.RNN.share)]
         return h_f, c_f, final_list
 

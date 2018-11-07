@@ -1,17 +1,21 @@
 import numpy as np
+import torch
 
-def evaluate_acc_(gold_y, pred_y):
+def evaluate_acc_(gold_y, pred_y, mask):
     if isinstance(pred_y, list):
         pred_y = np.array(pred_y)
     else:
         pred_y = pred_y.data.long().cpu().numpy()
+    num_label = torch.sum(mask).long().cpu().data.item()
+    num_padding = torch.sum(torch.eq(mask, 0)).cpu().long().data.item()
     gold_y = gold_y.data.long().cpu().numpy()
     rec_num = ((gold_y == pred_y) & (pred_y != 0)).sum()
     rec_den = (gold_y != 0).sum()
     prec_num = ((gold_y == pred_y) & (pred_y != 0)).sum()
     prec_den = (pred_y != 0).sum()
+    correct_labels = (gold_y == pred_y).sum() - num_padding
     
-    return prec_num, prec_den, rec_num, rec_den
+    return prec_num, prec_den, rec_num, rec_den, correct_labels, num_label
 
 def evaluate_acc(gold_y, pred_y):
     
@@ -36,11 +40,12 @@ def evaluate_acc(gold_y, pred_y):
     
     return prec_num, prec_den, rec_num, rec_den
 
-def eval_f1(prec_nums, prec_dens, rec_nums, rec_dens):
+def eval_f1(prec_nums, prec_dens, rec_nums, rec_dens, correct_labels, num_label):
     prec = 0.0 if prec_dens == 0 else prec_nums/prec_dens
     rec = 0.0 if rec_dens == 0 else rec_nums/rec_dens
     f1 = 0.0 if (prec+rec) == 0 else (2*prec*rec)/(prec+rec)
-    return prec, rec, f1
+    acc = 0.0 if num_label == 0 else correct_labels/num_label
+    return prec, rec, f1, acc
 
 
 def eval_file(path):

@@ -196,9 +196,8 @@ class Neural_Tagger_cnn(nn.Module):
         else:
             concat_hid = final_list[taskidx] + h_f
         #outs = self.Classifierlist[taskidx](concat_hid, tgt_seqs, src_masks)
-        h_p = final_list[taskidx].detach()
-        h_ff = h_f.detach() 
-        return concat_hid, h_p, h_ff
+        h_p = final_list[taskidx]
+        return concat_hid, h_p, h_f
     #def decode(self, feats, tgt_seqs, src_masks, tgt_seqs, taskidx):
     #    outs = self.Classifierlist[taskidx](feats, tgt_seqs, src_masks)
         
